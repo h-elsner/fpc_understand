@@ -36,6 +36,7 @@ Type
     Name: String;
     FileName: String;
     Line: String;
+    IsInterface: Boolean;
     FileIndex: integer; // Index in fList
   End;
 
@@ -76,7 +77,9 @@ Implementation
 
 {$R *.lfm}
 
-Uses unit13; // Code Window
+Uses 
+  math
+  , unit13; // Code Window
 
 Type
   PRoot = ^TRoot;
@@ -90,13 +93,13 @@ Type
 
   TClassSorter = Class
   private
-    //fItems: TItemList;
     fRoots: Array Of PRoot;
+    fWithInterfaces: Boolean;
     Procedure FreeRoot(Var Root: PRoot);
     Procedure SortChilds(Var Root: PRoot);
     Function InsertRootEle(Const Element: PRoot): Boolean;
   public
-    Constructor Create(); virtual;
+    Constructor Create(WithInterfaces: Boolean); virtual;
     Destructor Destroy(); override;
     Procedure AddItem(Const Item: TItem);
     Procedure Finish();
@@ -104,13 +107,30 @@ Type
 
   { TClassSorter }
 
-Constructor TClassSorter.Create;
+Constructor TClassSorter.Create(WithInterfaces: Boolean);
 Var
   it: TItem;
   r: PRoot;
 Begin
   Inherited Create;
   fRoots := Nil;
+  fWithInterfaces := WithInterfaces;
+  If WithInterfaces Then Begin
+    // Im mode Cobra wäre das Falsch, aber ein "leeres" Node sieht auch doof aus ..
+    it.parent := '';
+    it.Name := 'IUnknown';
+    it.Line := '';
+    it.FileName := '';
+    it.FileIndex := -1;
+    new(r);
+    r^.RootElement := it;
+    r^.Childs := Nil;
+    setlength(fRoots, 2);
+    fRoots[0] := r;
+  End
+  Else Begin
+    setlength(fRoots, 1);
+  End;
   it.parent := '';
   it.Name := 'TObject';
   it.Line := '';
@@ -119,8 +139,7 @@ Begin
   new(r);
   r^.RootElement := it;
   r^.Childs := Nil;
-  setlength(fRoots, 1);
-  fRoots[0] := r;
+  fRoots[high(fRoots)] := r;
 End;
 
 Destructor TClassSorter.Destroy;
@@ -188,9 +207,21 @@ Function TClassSorter.InsertRootEle(Const Element: PRoot): Boolean;
   Function InsertRootElement(Root: PRoot): Boolean;
   Var
     i: Integer;
+    n, p: String;
   Begin
     result := false;
-    If lowercase(Root^.RootElement.Name) = lowercase(Element^.RootElement.parent) Then Begin
+    // Der (..) Teil der das Interface angibt muss hier abgeschnitten werden.
+    n := lowercase(Root^.RootElement.Name);
+    p := lowercase(Element^.RootElement.parent);
+    If pos('(', n) <> 0 Then Begin
+      delete(n, pos('(', n), length(n));
+      n := trim(n);
+    End;
+    If pos('(', p) <> 0 Then Begin
+      delete(p, pos('(', p), length(p));
+      p := trim(p);
+    End;
+    If n = p Then Begin
       setlength(root^.Childs, high(root^.Childs) + 2);
       root^.Childs[high(root^.Childs)] := Element;
       result := true;
@@ -228,7 +259,7 @@ Var
   i: Integer;
   it, Ele: PRoot;
 Begin
-  For i := high(fRoots) Downto 1 Do Begin
+  For i := high(fRoots) Downto ifthen(fWithInterfaces, 2, 1) Do Begin
     ele := fRoots[i];
     setlength(fRoots, i);
     // Das Parent von Ele ist nicht im Baum
@@ -249,9 +280,12 @@ Begin
     End;
   End;
   (*
-   * Ganz Am Ende sortieren wir die KlinderKlassen Alphabetisch ;)
+   * Ganz Am Ende sortieren wir die Kinder Klassen Alphabetisch ;)
    *)
   SortChilds(fRoots[0]);
+  If fWithInterfaces Then Begin
+    SortChilds(fRoots[1]);
+  End;
 End;
 
 { TForm3 }
@@ -331,6 +365,7 @@ Function TForm3.LoadClasses(aList: TProjectFilesInfo; Project: TProject
   ): Boolean;
 Var
   ClassCount: integer;
+  InterfaceCount: integer;
 
   Function Traverse(Root: PRoot; aRoot: PVirtualNode): PVirtualNode;
   Var
@@ -348,7 +383,15 @@ Var
     adata^.Columns[1] := Root^.RootElement.FileName;
     adata^.Columns[2] := Root^.RootElement.Line;
 
-    If Root^.RootElement.FileName <> '' Then inc(ClassCount);
+    If (Root^.RootElement.FileName <> '') Then Begin
+      If (Root^.RootElement.IsInterface) Then Begin
+        inc(InterfaceCount);
+      End
+      Else Begin
+        inc(ClassCount);
+      End;
+    End;
+
     For i := 0 To high(Root^.Childs) Do Begin
       Traverse(Root^.Childs[i], result);
     End;
@@ -356,30 +399,61 @@ Var
 
 Var
   CS: TClassSorter;
-  i, j: Integer;
-  aRoot: PVirtualNode;
+  i, j, k, l: Integer;
+  aRoot, aroot2: PVirtualNode;
   it: TItem;
+  interfaces: String;
+  WithInterfaces: Boolean;
 Begin
   fProject := Project;
   result := false;
   If high(aList) = -1 Then exit;
   fList := aList;
-  cs := TClassSorter.Create();
+
+  WithInterfaces := false;
+  For i := 0 To high(aList) Do Begin
+    For j := 0 To high(aList[i].FileInfo.aClasses) Do Begin
+      If aList[i].FileInfo.aClasses[j].isInterface Then Begin
+        WithInterfaces := true;
+        break;
+      End;
+    End;
+    If WithInterfaces Then break;
+  End;
+  cs := TClassSorter.Create(WithInterfaces);
   For i := 0 To high(aList) Do Begin
     For j := 0 To high(aList[i].FileInfo.aClasses) Do Begin
       it.FileName := aList[i].Filename;
       it.Line := inttostr(aList[i].FileInfo.aClasses[j].LineInFile);
       it.Name := aList[i].FileInfo.aClasses[j].Name;
       it.FileIndex := i;
-      If assigned(aList[i].FileInfo.aClasses[j].Parents) Then Begin
-        it.parent := aList[i].FileInfo.aClasses[j].Parents[0];
-        // Wie gehen wir mit Interfaces um die ja mehrere Parents sind, keine Ahnung, aber so kriegt der User es wenigstens mit.
-        If length(aList[i].FileInfo.aClasses[j].Parents) > 1 Then Begin
-          ShowMessage('Warning: ' + aList[i].FileInfo.aClasses[j].Name + ' has multiple "Parents" visualization may fail.');
-        End;
+      it.IsInterface := aList[i].FileInfo.aClasses[j].isInterface;
+      If aList[i].FileInfo.aClasses[j].isInterface Then Begin
+        it.parent := 'IUnknown';
       End
       Else Begin
         it.parent := 'TObject';
+      End;
+      If assigned(aList[i].FileInfo.aClasses[j].Parents) Then Begin
+        interfaces := '';
+        // Wir suchen aus der Parent Liste die Echte Klasse heraus und machen die Interfaces zu einer Kommaliste
+        // Hat die Klasse nur Interfaces als Parent, dann bleibt TObject das Parent ;)
+        For k := 0 To high(aList[i].FileInfo.aClasses[j].Parents) Do Begin
+          For l := 0 To high(aList[i].FileInfo.aClasses) Do Begin
+            If (aList[i].FileInfo.aClasses[l].Name = aList[i].FileInfo.aClasses[j].Parents[k]) Then Begin
+              If aList[i].FileInfo.aClasses[l].isInterface Then Begin
+                If interfaces <> '' Then interfaces := interfaces + ', ';
+                interfaces := interfaces + aList[i].FileInfo.aClasses[l].Name;
+              End
+              Else Begin
+                it.parent := aList[i].FileInfo.aClasses[j].Parents[k];
+              End;
+            End;
+          End;
+        End;
+        If interfaces <> '' Then Begin
+          it.Name := it.Name + ' (' + interfaces + ')';
+        End;
       End;
       cs.AddItem(it);
     End;
@@ -390,13 +464,25 @@ Begin
    * Da sonst Kinder vor Eltern in den  LazVirtualStringTree1 geadded werden würden !
    *)
   ClassCount := 0;
+  InterfaceCount := 0;
   LazVirtualStringTree1.Clear;
   CSV_export.Clear;
   CSV_export.Add('Class;Parent;File;Line');
   aroot := Traverse(cs.fRoots[0], Nil);
+  If WithInterfaces Then Begin
+    aroot2 := Traverse(cs.fRoots[1], Nil);
+  End;
   cs.free;
   LazVirtualStringTree1.FullExpand(aRoot);
-  StatusBar1.Panels[0].Text := format('%d classes', [ClassCount]);
+  If WithInterfaces Then Begin
+    LazVirtualStringTree1.FullExpand(aroot2);
+  End;
+  If WithInterfaces Then Begin
+    StatusBar1.Panels[0].Text := format('%d interfaces, %d classes', [InterfaceCount, ClassCount]);
+  End
+  Else Begin
+    StatusBar1.Panels[0].Text := format('%d classes', [ClassCount]);
+  End;
   result := true;
 End;
 

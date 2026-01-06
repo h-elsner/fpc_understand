@@ -7,14 +7,15 @@ object Form3: TForm3
   ClientHeight = 613
   ClientWidth = 976
   Position = poScreenCenter
-  LCLVersion = '3.99.0.0'
+  LCLVersion = '4.99.0.0'
   OnCreate = FormCreate
   OnDestroy = FormDestroy
   object LazVirtualStringTree1: TLazVirtualStringTree
+    Cursor = 63
     Left = 8
-    Height = 608
+    Height = 232
     Top = 8
-    Width = 1536
+    Width = 900
     DefaultText = 'Node'
     Header.AutoSizeIndex = 0
     Header.Columns = <    
@@ -52,8 +53,8 @@ object Form3: TForm3
   end
   object StatusBar1: TStatusBar
     Left = 0
-    Height = 23
-    Top = 590
+    Height = 24
+    Top = 589
     Width = 976
     Panels = <    
       item

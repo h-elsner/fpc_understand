@@ -47,6 +47,7 @@ Type
     Name: String; // Name der Klasse
     Parents: Array Of String; // Von Wem wird die Klasse abgeleitet ? (das sind mehrere da es ja auch Interfaces gibt) = Nil -> TObject
     LineInFile: integer; // Die 1. Implementierung, das ist dann ggf auch eine Forwärtsdeklaration, wenn man das anders will kann man das in  AddClassToClassList machen und der Doppelte überschreibt dann die Line
+    isInterface: Boolean; // Wenn True, dann ist es keine Klasse sondern ein Interface!
   End;
 
   TFileInfo = Record
@@ -63,11 +64,15 @@ Type
   TState = (
     sIdle // Top Level Ebene hier kann "alles" gefunden werden
     , sInClassStart // Wir haben "= class" gefunden -> Entscheiden ob wir das interface einer Klasse einlesen oder nur ne Forwärtsdeclaration
-    , sInParams // Wir werten "Parameter" einer Funktion / Classe irgendwas aus -> wir ignorieren alles bis zum Passenden ) und gehen in den Vorherigen State zurück
-    , sInClassParents // Scan der Parents Commaliste einer Klasse (Normalerweise nur 1 + ggf interfaces)
-    , sInClassInterface // Wir Parsen ein "echtes" Klassen Interface -> Scip bis "end;"
+    , sInInterfaceStart // Wir haben "= interface" gefunden -> Entscheiden ob wir das interface einer Klasse einlesen oder nur ne Forwärtsdeclaration
+    , sInParams // Wir werten "Parameter" einer Funktion / Klasse irgendwas aus -> wir ignorieren alles bis zum Passenden ) und gehen in den Vorherigen State zurück
+    , sInClassParents // Scan der Parents Kommaliste einer Klasse (Normalerweise nur 1 + ggf interfaces)
+    , sInInterfaceParents // Scan der Parents Kommaliste einer Klasse (Normalerweise nur interfaces)
+    , sInInterfaceGUID // Liest die GUID des Interfaces "weg"
+    , sInClassInterface // Wir Parsen ein "echtes" Klassen Interface -> Skip bis "end;"
+    , sInInterfaceInterface // Wir Parsen ein "echtes" Klassen Interface -> Skip bis "end;"
     , sParseFunProcName // Einlesen der Aktuellen Funktion
-    , sInFunProc // Das eigentliche Messen der CC in der gefundenen Methode (inclusive der CC aller genesteten Methoden)
+    , sInFunProc // Das eigentliche Messen der CC in der gefundenen Methode (inklusive der CC aller genesteten Methoden)
     , sScanIfComplexity // Scant den Teil zwischen "if" und "Then"
     , sScanUses // Liest einen Uses Teil ein.
     );
@@ -102,6 +107,7 @@ Type
     fSearchpaths: TStringlist; // Temporäre Liste die Während ParseFile zum auflösen von Dateipfaden genutzt wird
     Procedure OnHandleToken(Sender: TObject; Const Token: TToken);
     Procedure AddClassToClassList(Const aToken: TToken);
+    Procedure AddInterfaceToClassList(Const aToken: TToken);
 
     Procedure InitLookback();
     Procedure PushLookback(Value: TToken);
@@ -140,7 +146,7 @@ Begin
     inc(fFileInfo.NumberofCommentLines);
   End;
   (* filter everything irrelevant out ;) *)
-  If (Token.Kind = tkComment) Or (Token.Kind = tkString) Or (Token.Kind = tkCompilerDirective) Then Exit;
+  If (Token.Kind = tkComment) Or ((Token.Kind = tkString) And (state <> sInInterfaceGUID)) Or (Token.Kind = tkCompilerDirective) Then Exit;
   If (token.Kind = tkIdentifier) And (ParseFunctionBody) Then Begin
     aProcInfo.IdentifierList[aProcInfo.IdentifierListCnt] := Token.Value;
     inc(aProcInfo.IdentifierListCnt);
@@ -186,7 +192,8 @@ Begin
           End;
         End;
         If (Last(0).Value = '=') And (lowercase(Token.Value) = 'interface') Then Begin
-          Raise exception.create('Error interfaces are not supported yet (' + inttostr(Token.Line) + ')');
+          State := sInInterfaceStart;
+          AddInterfaceToClassList(Last(1))
         End;
         If BelowImplementation Then Begin
           If (lowercase(Token.Value) = 'procedure') Or (lowercase(Token.Value) = 'function') Or
@@ -266,9 +273,23 @@ Begin
           State := sInClassParents;
         End;
         If (token.Value = ';') Then State := sIdle; // War nur ne Classen Forwärts Deklaration
-        If (lowercase(token.Value) = 'of') Then State := sIdle; // War nur ne Classen Forwärts Deklaration
+        If (lowercase(token.Value) = 'of') Then State := sIdle; // War nur ne Klassen Forwärts Deklaration
         If ((token.Kind = tkKeyWord) Or (token.Kind = tkIdentifier)) And (Not (lowercase(Token.Value) = 'of')) Then Begin
           State := sInClassInterface;
+          Counter := 1;
+        End;
+      End;
+    sInInterfaceStart: Begin
+        If (Token.Value = '(') Then Begin // ggf. überlesen von "Parent"
+          PrevState := State;
+          State := sInInterfaceParents;
+        End;
+        If (Token.Value = '[') Then Begin // ggf. überlesen von "Parent"
+          PrevState := State;
+          State := sInInterfaceGUID;
+        End;
+        If ((token.Kind = tkKeyWord) Or (token.Kind = tkIdentifier)) Then Begin
+          State := sInInterfaceInterface;
           Counter := 1;
         End;
       End;
@@ -281,13 +302,31 @@ Begin
           fFileInfo.aClasses[aClassindex].Parents[high(fFileInfo.aClasses[aClassindex].Parents)] := Token.Value;
         End;
       End;
+    sInInterfaceParents: Begin
+        If (Token.Kind = tkOperator) And (Token.Value = ')') Then Begin
+          State := sInInterfaceStart;
+        End;
+        If (token.Kind <> tkOperator) Then Begin // Es kommen nur "," und ")" for.
+          setlength(fFileInfo.aClasses[aClassindex].Parents, high(fFileInfo.aClasses[aClassindex].Parents) + 2);
+          fFileInfo.aClasses[aClassindex].Parents[high(fFileInfo.aClasses[aClassindex].Parents)] := Token.Value;
+        End;
+      End;
+    sInInterfaceGUID: Begin
+        If (Token.Kind = tkOperator) And (Token.Value = ']') Then Begin
+          State := sInInterfaceStart;
+        End;
+        If (Token.Kind = tkString) Then Begin
+          // Todo: Theoretisch könnte man hier den String der die GUID ist auch irgendwie verarbeiten ..
+        End;
+      End;
     sInParams: Begin // Alles ignorieren bis ")" und dann wieder zurück zu dem was wir waren.
         If (Token.Kind = tkOperator) And (Token.Value = ')') Then Begin
           State := PrevState;
         End;
       End;
-    sInClassInterface: Begin
-        If (Last(0).Value = '=') And (lowercase(token.Value) = 'record') Then Begin // Eine Record Definition innerhalb des Classen Interfaces ..
+    sInInterfaceInterface,
+      sInClassInterface: Begin
+        If (Last(0).Value = '=') And (lowercase(token.Value) = 'record') Then Begin // Eine Record Definition innerhalb des Klassen Interfaces ..
           inc(Counter);
         End;
         If (Last(0).Value = '=') And (lowercase(token.Value) = 'class') Then Begin // Eine weitere Klassen Definition innerhalb eines Klassen Interfaces
@@ -412,7 +451,14 @@ Begin
   fFileInfo.aClasses[high(fFileInfo.aClasses)].Name := aToken.Value;
   fFileInfo.aClasses[high(fFileInfo.aClasses)].LineInFile := aToken.Line;
   fFileInfo.aClasses[high(fFileInfo.aClasses)].Parents := Nil;
+  fFileInfo.aClasses[high(fFileInfo.aClasses)].isInterface := false;
   aClassindex := high(fFileInfo.aClasses);
+End;
+
+Procedure TFPCParser.AddInterfaceToClassList(Const aToken: TToken);
+Begin
+  AddClassToClassList(aToken);
+  fFileInfo.aClasses[aClassindex].isInterface := true;
 End;
 
 Procedure TFPCParser.InitLookback;
